@@ -403,13 +403,23 @@ function parseEvent(e,league){
 async function syncFootball(force){
   if(syncFootball.busy)return;syncFootball.busy=true;
   const btn=$('fRefresh');btn.disabled=true;setSync('busy','Atualizando futebol…');$('fMsg').innerHTML='';
-  const today=new Date(),from=ymd(addDays(today,-settings.days)),to=ymd(addDays(today,3));
+  const today=new Date();
   const fresh={};let errors=[],okCount=0;
   try{
     await pool(settings.leagues,4,async lg=>{
       try{
-        const j=await getJSON(ESPN+'soccer/'+lg+'/scoreboard?dates='+from+'-'+to+'&limit=1000');
-        for(const e of (j.events||[])){const m=parseEvent(e,lg);if(m)fresh[m.id]=m}
+        // a ESPN recusa intervalos longos: busca em blocos de 7 dias; se o bloco falhar, dia a dia
+        let got=0,fails=0,lastErr=null;
+        const add=j=>{for(const e of (j.events||[])){const m=parseEvent(e,lg);if(m){fresh[m.id]=m;got++}}};
+        for(let d=addDays(today,-settings.days);d<=addDays(today,3);d=addDays(d,7)){
+          const a=ymd(d),b=ymd(addDays(d,6));
+          try{add(await getJSON(ESPN+'soccer/'+lg+'/scoreboard?dates='+a+'-'+b+'&limit=200'))}
+          catch(e){
+            try{add(await getJSON(ESPN+'soccer/'+lg+'/scoreboard?dates='+a+'-'+b))}
+            catch{for(let k=0;k<7;k++){try{add(await getJSON(ESPN+'soccer/'+lg+'/scoreboard?dates='+ymd(addDays(d,k))))}catch(e2){fails++;lastErr=e2}}}
+          }
+        }
+        if(!got&&fails)throw lastErr||Error('sem dados');
         okCount++;
       }catch(e){errors.push(LNAME[lg]+': '+netErr(e))}
     },(d,n)=>prog('fProg',d/n*.4));
