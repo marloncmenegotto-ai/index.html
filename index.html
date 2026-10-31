@@ -100,7 +100,8 @@ input[type=text],input[type=number],input[type=date],input[type=search],select{w
 .pill.G{background:rgba(79,207,142,.16);color:var(--green)}
 .pill.R{background:rgba(239,107,107,.16);color:var(--red)}
 .pill.P{background:var(--surface-2);color:var(--muted)}
-.add{width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--surface-2);font-size:18px;line-height:1;color:var(--gold);display:grid;place-items:center}
+.rank{font-family:var(--f-display);font-size:26px;font-weight:700;color:var(--gold);min-width:26px;line-height:1.1;text-align:center}
+.add{flex:none;width:32px;height:32px;border-radius:9px;border:1px solid var(--line);background:var(--surface-2);font-size:18px;line-height:1;color:var(--gold);display:grid;place-items:center}
 .add[aria-pressed="true"]{background:var(--gold);color:#141007;border-color:var(--gold)}
 .bF{background:var(--green)} .bB{background:var(--amber)} .bX{background:#55627c}
 
@@ -168,7 +169,7 @@ details.help p,details.help li{font-size:13px;color:var(--muted)}
       <button data-v="2" aria-pressed="false">Depois de amanhã</button>
     </div>
     <div class="seg" id="fTab" role="group" aria-label="Visão">
-      <button data-v="radar" aria-pressed="true">Radar</button>
+      <button data-v="radar" aria-pressed="true">Top do dia</button>
       <button data-v="jogos" aria-pressed="false">Jogos</button>
       <button data-v="rank" aria-pressed="false">Ranking</button>
       <button data-v="arb" aria-pressed="false">Árbitros</button>
@@ -918,21 +919,38 @@ function pickRow(a,mk){
 function renderRadarFut(ans){
   const bt=backtest();logFootball(ans);
   const pre=ans.filter(a=>a.m.st==='pre');
-  const picks={F:[],B:[]};
-  for(const a of pre)for(const mk of a.markets)if(picks[mk.g])picks[mk.g].push({a,mk});
-  // no máximo 2 palpites por jogo no radar, os mais prováveis
-  const trim=list=>{const per={};return list.sort((x,y)=>y.mk.p-x.mk.p).filter(x=>(per[x.a.m.id]=(per[x.a.m.id]||0)+1)<=2)};
-  const F=trim(picks.F),B=trim(picks.B.filter(x=>!picks.F.some(y=>y.a.m.id===x.a.m.id&&y.mk.key===x.mk.key)));
+  const W={F:2,B:1};
+  const score=mk=>W[mk.g]+(mk.p||0)+(mk.mi&&mk.mi.ev!=null?(mk.mi.ev>=.03?.3:mk.mi.ev<0?-.2:0):0);
+  // um item por jogo: o melhor mercado dele; os outros ficam dentro do item
+  const items=[];
+  for(const a of pre){const ok=a.markets.filter(mk=>W[mk.g]).sort((x,y)=>score(y)-score(x));if(ok.length)items.push({kind:'f',a,mk:ok[0],more:ok.slice(1),s:score(ok[0])})}
+  for(const r of LINES.filter(l=>l.dir!=='under').map(analyzeLine))if(r.tier==='Forte'||r.tier==='Moderada'){const g=r.tier==='Forte'?'F':'B';items.push({kind:'n',r,g,s:W[g]+(r.p||0)+(r.ev!=null?(r.ev>=.03?.3:r.ev<0?-.2:0):0)})}
+  items.sort((x,y)=>y.s-x.s);
+  const nF=items.filter(x=>(x.mk?x.mk.g:x.g)==='F').length,nB=items.length-nF;
+  const dayName=['Hoje','Amanhã','Depois de amanhã'][ui.fDay];
+  const head=`<div class="card"><div class="row between"><div><h3 style="margin:0">Melhores oportunidades · ${dayName}</h3><div class="small muted" style="margin-top:4px">${pre.length} jogos analisados${LINES.length?' + '+LINES.length+' linhas NBA':''} · do melhor para o pior</div></div></div>
+    <div class="row" style="margin-top:10px;gap:6px"><span class="pill F">${nF} fortes</span><span class="pill B">${nB} moderadas</span>${Object.keys(ODDS.ev).length?'':'<span class="small muted">Toque em Odds para ver valor e preço da bet365</span>'}</div></div>`;
+  const rowF=(x,i)=>{const {a,mk}=x,id=legId(a.m.id,mk.key),on=inSlip(id);const odd=mk.mi&&mk.mi.best;
+    return `<article class="card" style="padding:12px 14px"><div class="row" style="flex-wrap:nowrap;gap:12px;align-items:flex-start">
+      <span class="rank">${i+1}</span>
+      <div style="flex:1;min-width:0"><div class="row between" style="flex-wrap:nowrap;gap:8px"><b style="min-width:0">${esc(mk.label)}</b><span class="pct">${pct(mk.p)}</span></div>
+        <div class="small muted">${esc(a.m.h.n)} x ${esc(a.m.a.n)} · ${esc(LNAME[a.m.lg]||'')} · ${hm(a.m.d)}</div>
+        <div class="row" style="gap:6px;margin-top:6px"><span class="pill ${mk.g}">${GLABEL[mk.g]}</span>${odd?`<span class="tag">odd ${odd.p.toFixed(2)} ${esc(odd.b)}</span>`:''}${valueTag(mk)}</div>
+        <details style="margin-top:6px"><summary class="small" style="color:var(--gold);cursor:pointer">Por quê${x.more.length?' · +'+x.more.length+' mercado'+(x.more.length>1?'s':''):''}</summary><div class="small muted" style="margin-top:4px">${esc(mk.det+oddsLine(mk))}</div>${x.more.map(o=>pickRow(a,o)).join('')}</details>
+      </div>
+      <button class="add" data-add="${esc(id)}" aria-pressed="${on}" aria-label="${on?'Tirar do':'Pôr no'} bilhete">${on?'✓':'+'}</button></div></article>`};
+  const rowN=(x,i)=>{const r=x.r,L=r.L,id='n:'+L.id,on=inSlip(id);
+    return `<article class="card" style="padding:12px 14px"><div class="row" style="flex-wrap:nowrap;gap:12px;align-items:flex-start">
+      <span class="rank">${i+1}</span>
+      <div style="flex:1;min-width:0"><div class="row between" style="flex-wrap:nowrap;gap:8px"><b style="min-width:0">${esc(L.p)} · mais de ${L.line} ${MK[L.m].toLowerCase()}</b><span class="pct">${pct(r.p)}</span></div>
+        <div class="small muted">NBA${L.jogo?' · '+esc(L.jogo):''} · últimos 5: ${r.h5}/5 · últimos ${r.n}: ${r.h10}/${r.n}</div>
+        <div class="row" style="gap:6px;margin-top:6px"><span class="pill ${x.g}">${GLABEL[x.g]}</span>${L.odd?`<span class="tag">odd ${L.odd.toFixed(2)}${L.casa?' '+esc(L.casa):''}</span>`:''}${r.ev!=null?(r.ev>=.03?`<span class="pill F">Valor +${Math.round(r.ev*100)}%</span>`:r.ev<0?'<span class="pill X">Sem valor</span>':''):''}</div>
+      </div>
+      <button class="add" data-add="${esc(id)}" aria-pressed="${on}" aria-label="Bilhete">${on?'✓':'+'}</button></div></article>`};
+  const list=items.length?items.map((x,i)=>x.kind==='f'?rowF(x,i):rowN(x,i)).join(''):`<div class="card empty"><b>Nenhuma oportunidade ${ui.fDay?'neste dia':'hoje'}</b>${pre.length?'Os jogos foram analisados e nenhum passou nos critérios. Melhor não forçar.':'Não há jogos por começar. Veja Amanhã ou toque em Atualizar.'}</div>`;
   const rate=t=>t&&t.n?`${Math.round(t.g/t.n*100)}% <span class="muted">(${t.g}/${t.n})</span>`:'<span class="muted">—</span>';
   const testRows=Object.keys(MKNAME).filter(k=>bt.res[k]&&bt.res[k].length).map(k=>{const b=bt.brier[k];return `<tr><td>${MKNAME[k]}${bt.unstable[k]?' <span class="tag">instável</span>':''}${bt.useRef[k]?' <span class="tag">motor antigo</span>':''}</td><td class="n">${rate(bt.tiers[k].F)}</td><td class="n">${rate(bt.tiers[k].B)}</td><td class="n">${b?b.v3.toFixed(3)+' / '+b.old.toFixed(3):'—'}</td></tr>`}).join('');
-  const nbaRows=LINES.filter(l=>l.dir!=='under').map(analyzeLine).filter(r=>r.tier==='Forte'||r.tier==='Moderada');
-  const nbaHtml=t=>{const l=nbaRows.filter(r=>r.tier===t);return l.length?`<h3>NBA</h3>`+l.map(r=>{const L=r.L,id='n:'+L.id,on=inSlip(id);return `<div class="mk"><span class="lab">${esc(L.p)} · ${L.dir==='over'?'Mais':'Menos'} de ${L.line} ${MK[L.m]}<span class="small muted" style="display:block;font-weight:400">Últimos 5: ${r.h5}/5 · últimos ${r.n}: ${r.h10}/${r.n}</span></span><span class="pct">${pct(r.p)}</span><button class="add" data-add="${esc(id)}" aria-pressed="${on}" aria-label="Bilhete">${on?'✓':'+'}</button></div>`}).join(''):''};
-  const sec=(title,cls,list,tier,empty)=>`<div class="card"><div class="row between"><h3 style="margin:0">${title}</h3><span class="pill ${cls}">${list.length+nbaRows.filter(r=>r.tier===tier).length}</span></div>${list.length?list.map(x=>pickRow(x.a,x.mk)).join(''):`<div class="small muted" style="padding-top:8px">${empty}</div>`}${nbaHtml(tier)}</div>`;
-  const val=[...F,...B].filter(x=>x.mk.mi&&x.mk.mi.ev!=null&&x.mk.mi.ev>=.03).sort((x,y)=>y.mk.mi.ev-x.mk.mi.ev);
-  const valHtml=val.length?`<div class="card"><div class="row between"><h3 style="margin:0">Com valor nas odds</h3><span class="pill F">${val.length}</span></div><p class="small muted" style="margin:6px 0 0">A chance estimada é maior do que a odd paga. São os únicos palpites com expectativa de lucro.</p>${val.map(x=>pickRow(x.a,x.mk)).join('')}</div>`:(Object.keys(ODDS.ev).length?'<div class="card small muted">Nenhum palpite Forte ou Moderado tem valor nas odds de hoje. Sem valor, a aposta perde dinheiro no longo prazo mesmo acertando muito.</div>':'');
-  return valHtml+sec('Fortes','F',F,'Forte','Nenhum palpite forte neste dia. Melhor não forçar.')
-   +sec('Moderados','B',B,'Moderada','Nenhum palpite moderado neste dia.')
-   +`<div class="card"><h3 style="margin-top:0">Precisão no teste (últimos 35 dias)</h3><p class="small muted" style="margin:0 0 6px">Cada jogo já encerrado foi previsto usando só os dados de antes dele. Mostra quanto cada nível acertou de verdade.</p>${testRows?`<div class="tbl"><table><thead><tr><th>Mercado</th><th class="n">Forte</th><th class="n">Moderado</th><th class="n">Erro V3 / antigo</th></tr></thead><tbody>${testRows}</tbody></table></div><p class="small muted" style="margin:8px 0 0">Erro é o Brier Score: quanto menor, melhor. Onde o motor antigo erra menos, o app usa o antigo (marcado como motor antigo). Mercado instável acertou bem menos que o esperado no teste, e nele nenhum palpite sobe para Forte.</p>`:'<div class="small muted">Precisa de mais jogos encerrados na base. Aumente o histórico em Ajustes.</div>'}</div>`;
+  return head+list+`<details class="card"><summary style="cursor:pointer;font-weight:600">Precisão no teste (últimos 35 dias)</summary><p class="small muted" style="margin:8px 0 6px">Cada jogo já encerrado foi previsto usando só os dados de antes dele. Mostra quanto cada nível acertou de verdade.</p>${testRows?`<div class="tbl"><table><thead><tr><th>Mercado</th><th class="n">Forte</th><th class="n">Moderado</th><th class="n">Erro V3 / antigo</th></tr></thead><tbody>${testRows}</tbody></table></div><p class="small muted" style="margin:8px 0 0">Erro é o Brier Score: quanto menor, melhor. Onde o motor antigo erra menos, o app usa o antigo. Mercado instável não gera palpite Forte.</p>`:'<div class="small muted">Precisa de mais jogos encerrados na base.</div>'}</details>`;
 }
 function renderRefs(ms){
   indexes();
