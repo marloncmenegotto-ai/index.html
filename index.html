@@ -274,11 +274,12 @@ details.help p,details.help li{font-size:13px;color:var(--muted)}
       <label class="row small"><input type="checkbox" id="setAuto"> Atualizar sozinho ao abrir (futebol a cada 6 h, NBA a cada 24 h)</label>
     </div>
     <div class="card view">
-      <h3 style="margin:0">Odds reais · The Odds API</h3>
+      <h3 style="margin:0">Odds reais</h3>
       <label class="f"><span>Chave da API</span><input type="text" id="setOddsKey" autocomplete="off" spellcheck="false" placeholder="cole aqui a chave do seu e-mail"></label>
-      <label class="f"><span>Região das casas</span><select id="setOddsRegion"><option value="eu">Europa (inclui Pinnacle)</option><option value="uk">Reino Unido</option></select></label>
+      <label class="f"><span>Serviço</span><select id="setOddsProv"><option value="papi">OddsPapi (bet365 + Pinnacle)</option><option value="toa">The Odds API</option></select></label>
+      <label class="f" id="regionWrap"><span>Região das casas (The Odds API)</span><select id="setOddsRegion"><option value="eu">Europa (inclui Pinnacle)</option><option value="uk">Reino Unido</option></select></label>
       <div class="row"><button class="btn" id="oddsTest">Testar chave</button><span class="small muted" id="oddsStatus"></span></div>
-      <p class="small muted" style="margin:0">A chave fica salva só neste celular. Cada busca de odds do futebol gasta 2 créditos por liga com jogos nos próximos 3 dias, e as linhas da NBA gastam cerca de 3 por jogo. O plano grátis dá 500 por mês. A bet365 não está disponível na API para a Europa.</p>
+      <p class="small muted" style="margin:0">A chave fica salva só neste celular. OddsPapi: 250 consultas grátis por mês; cada toque em Odds gasta 2 (Pinnacle e bet365), e a primeira vez gasta mais 3 para configurar. The Odds API: 500 créditos por mês, sem bet365 na Europa; é a única que puxa as linhas de jogadores da NBA.</p>
     </div>
     <div class="card view">
       <h3 style="margin:0">Banca</h3>
@@ -669,8 +670,15 @@ async function fetchOdds(){
   const btn=$('fOdds');if(fetchOdds.busy)return;fetchOdds.busy=true;btn.disabled=true;
   try{
     const now=Date.now(),soon=now+72*3600000;
-    const lgs=[...new Set(Object.values(FB.matches).filter(m=>m.st==='pre'&&new Date(m.d).getTime()<soon).map(m=>m.lg))].filter(l=>OSPORT[l]);
+    const lgs=[...new Set(Object.values(FB.matches).filter(m=>m.st==='pre'&&new Date(m.d).getTime()<soon).map(m=>m.lg))].filter(l=>OSPORT[l]||PAPI_LG[l]);
     if(!lgs.length){toast('Sem jogos nas próximas 72 h para buscar odds');return}
+    if(oddsProv()==='papi'){
+      setSync('busy','Buscando odds…');
+      try{const n=await fetchOddsPapi();ODDS.at=Date.now();store.set('odds',ODDS);setSync('ok','Odds '+ago(ODDS.at));toast(n+' jogos com odds · '+papiInfo());
+        $('fMsg').innerHTML=ODDS.diag?'<div class="notice err">Odds: '+esc(ODDS.diag.slice(0,600))+'</div>':''}
+      catch(e){store.set('odds',ODDS);setSync('err','Falha nas odds');$('fMsg').innerHTML='<div class="notice err">Odds: '+esc(netErr(e))+(ODDS.diag?' · '+esc(ODDS.diag.slice(0,500)):'')+'</div>'}
+      return;
+    }
     setSync('busy','Buscando odds…');let matched=0,errs=[];
     for(const lg of lgs){
       try{
@@ -706,8 +714,17 @@ function oddsLine(mk){
   return ` · mercado ${pct(x.mp)}${x.best?` · melhor odd ${x.best.p.toFixed(2)} (${x.best.b})`:''}`;
 }
 function valueTag(mk){const x=mk.mi;if(!x||x.ev==null)return '';return x.ev>=.03?`<span class="pill F">Valor +${Math.round(x.ev*100)}%</span>`:x.ev<0?`<span class="pill X">Sem valor</span>`:''}
+function oddsProv(){return settings.oddsProv||(/^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(settings.oddsKey||'')?'papi':'toa')}
+function papiInfo(){const mo=new Date().toISOString().slice(0,7);const used=ODDS.papiMonth===mo?ODDS.papiUsed||0:0;return 'cerca de '+Math.max(0,250-used)+' consultas restantes no mês'}
 async function testOddsKey(){
   const out=$('oddsStatus');out.textContent='Testando…';
+  if(oddsProv()==='papi'){
+    try{const a=await papiGet('account',{});ODDS.papiUsed=Math.max(0,(ODDS.papiUsed||1)-1);store.set('odds',ODDS);
+      const info=a&&typeof a==='object'?Object.entries(a).filter(([k,v])=>/request|limit|plan|usage/i.test(k)&&typeof v!=='object').map(([k,v])=>k+': '+v).join(' · '):'';
+      out.textContent='Chave OK na OddsPapi.'+(info?' '+info:'')+' A primeira busca de odds gasta 3 consultas extras para configurar.'}
+    catch(e){out.textContent='Não funcionou: '+netErr(e)+'.'}
+    return;
+  }
   try{const s=await oddsGet('sports',{});out.textContent='Chave OK. '+s.length+' esportes disponíveis'+(ODDS.left!=null?' · '+ODDS.left+' créditos restantes no mês':'')+'.';store.set('odds',ODDS)}
   catch(e){out.textContent='Não funcionou: '+netErr(e)+'.'}
 }
@@ -730,6 +747,104 @@ async function fetchNbaProps(){
     store.set('nbaLines',LINES);store.set('odds',ODDS);toast(added+' linhas importadas'+(ODDS.left!=null?' · '+ODDS.left+' créditos restantes':''));renderRadar();
   }catch(e){toast('Odds NBA: '+netErr(e))}
   finally{btn.disabled=false;btn.textContent='Puxar linhas das casas'}
+}
+
+/* ============ OddsPapi ============ */
+// 250 consultas/mês contando tudo. Referências (ligas, times, mercados) são baixadas uma vez e guardadas.
+const PAPI='https://api.oddspapi.io/v4/';
+let PREF=store.get('papiRef',{tours:null,parts:null,mkts:null,at:0});
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+let papiLast=0;
+async function papiGet(path,params){
+  if(!settings.oddsKey)throw Error('informe a chave em Ajustes');
+  const wait=1100-(Date.now()-papiLast);if(wait>0)await sleep(wait);papiLast=Date.now();
+  const q=new URLSearchParams({...params,apiKey:settings.oddsKey});
+  const r=await xfetch(PAPI+path+'?'+q,20000);
+  let body=null;try{body=await r.json()}catch{}
+  if(!r.ok){const msg=body&&(body.message||body.error||body.code)||'';
+    if(r.status===401||r.status===403)throw Error('chave recusada'+(msg?' ('+msg+')':''));
+    if(r.status===429)throw Error('limite do mês atingido'+(msg?' ('+msg+')':''));
+    throw Error('HTTP '+r.status+(msg?' '+msg:''))}
+  ODDS.papiUsed=(ODDS.papiUsed||0)+1;ODDS.papiMonth=ODDS.papiMonth===new Date().toISOString().slice(0,7)?ODDS.papiMonth:new Date().toISOString().slice(0,7);
+  return body;
+}
+const PAPI_LG={'esp.1':['spain','laliga'],'eng.1':['england','premier league'],'ita.1':['italy','serie a'],'ger.1':['germany','bundesliga'],'fra.1':['france','ligue 1'],'por.1':['portugal','liga portugal'],'bra.1':['brazil','brasileiro serie a'],'uefa.champions':['','uefa champions league'],'uefa.europa':['','uefa europa league'],'esp.2':['spain','laliga 2'],'eng.2':['england','championship'],'ned.1':['netherlands','eredivisie'],'tur.1':['turkiye','super lig'],'arg.1':['argentina','liga profesional'],'usa.1':['usa','mls'],'mex.1':['mexico','liga mx'],'bel.1':['belgium','pro league'],'sco.1':['scotland','premiership']};
+const flat=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+function papiTour(lg){
+  const t=PREF.tours;if(!Array.isArray(t))return null;const [cat,name]=PAPI_LG[lg]||[];if(!name)return null;
+  let best=null,score=0;
+  for(const x of t){
+    const n=flat(x.tournamentName||x.tournamentSlug),c=flat(x.categoryName||x.categorySlug);
+    let s=0;if(n===name)s+=3;else if(n.startsWith(name)||name.startsWith(n))s+=1.5;else continue;
+    if(/women|u19|u21|u23|youth|reserve/.test(n))continue;
+    if(cat&&c.includes(cat))s+=2;else if(cat&&!c.includes(cat))s-=2;
+    if(x.upcomingFixtures||x.futureFixtures)s+=.5;
+    if(s>score){score=s;best=x}
+  }
+  return score>=3?best.tournamentId:null;
+}
+// mercados de gols: acha os IDs de Mais/Menos 1.5 e 2.5 do jogo inteiro
+function papiTotals(){
+  const out={};const arr=Array.isArray(PREF.mkts)?PREF.mkts:[];
+  for(const m of arr){
+    if(m.sportId!=null&&Number(m.sportId)!==10)continue;if(m.playerProp)continue;
+    const nm=flat(m.marketName)+' '+flat(m.marketType)+' '+flat(m.period);
+    if(!/total|over|under/.test(nm)||/half|corner|card|booking|team|home|away|1st|2nd|period|asian|exact|odd|even/.test(nm))continue;
+    const h=Number(m.handicap);if(h!==1.5&&h!==2.5)continue;
+    const ov=(m.outcomes||[]).find(o=>/over/i.test(o.outcomeName)),un=(m.outcomes||[]).find(o=>/under/i.test(o.outcomeName));
+    if(!ov||!un)continue;if(!out[h])out[h]={id:String(m.marketId),over:String(ov.outcomeId),under:String(un.outcomeId)};
+  }
+  return out;
+}
+async function papiSetup(force){
+  if(!force&&PREF.tours&&PREF.parts&&PREF.mkts)return;
+  setSync('busy','Configurando OddsPapi (3 consultas, só uma vez)…');
+  if(force||!PREF.tours){const t=await papiGet('tournaments',{sportId:10});PREF.tours=(Array.isArray(t)?t:(t&&t.data)||[]).map(x=>({tournamentId:x.tournamentId,tournamentName:x.tournamentName,tournamentSlug:x.tournamentSlug,categoryName:x.categoryName,categorySlug:x.categorySlug,upcomingFixtures:x.upcomingFixtures,futureFixtures:x.futureFixtures}))}
+  if(force||!PREF.parts){const p=await papiGet('participants',{sportId:10});PREF.parts=p&&typeof p==='object'&&!Array.isArray(p)?p:Object.fromEntries((p||[]).map(x=>[x.participantId,x.participantName||x.name]))}
+  if(force||!PREF.mkts){const m=await papiGet('markets',{});PREF.mkts=(Array.isArray(m)?m:(m&&m.data)||[]).filter(x=>Number(x.sportId)===10&&!x.playerProp).map(x=>({marketId:x.marketId,marketName:x.marketName,marketType:x.marketType,period:x.period,handicap:x.handicap,sportId:x.sportId,outcomes:x.outcomes}))}
+  PREF.at=Date.now();store.set('papiRef',PREF);
+}
+const pprice=(mk,oid)=>{const o=mk&&mk.outcomes&&mk.outcomes[oid];if(!o)return null;const pl=o.players&&(o.players['0']||Object.values(o.players)[0]);return pl&&pl.active!==false&&pl.price>1?pl.price:null};
+async function fetchOddsPapi(){
+  await papiSetup(false);
+  const now=Date.now(),soon=now+72*3600000;
+  const upcoming=Object.values(FB.matches).filter(m=>m.st==='pre'&&new Date(m.d).getTime()<soon);
+  const lgs=[...new Set(upcoming.map(m=>m.lg))];
+  const tmap={};for(const lg of lgs){const id=papiTour(lg);if(id!=null)tmap[id]=lg}
+  const tids=Object.keys(tmap);
+  if(!tids.length){ODDS.diag='Nenhuma liga encontrada na OddsPapi. Exemplo das ligas recebidas: '+JSON.stringify((PREF.tours||[]).slice(0,4));throw Error('não encontrei as ligas na OddsPapi')}
+  const TOT=papiTotals();
+  const books=['pinnacle',settings.papiBook||'bet365'];
+  const data={};
+  for(const b of books){
+    try{const arr=await papiGet('odds-by-tournaments',{bookmaker:b,tournamentIds:tids.join(','),oddsFormat:'decimal'});
+      for(const f of (Array.isArray(arr)?arr:[])){const bo=f.bookmakerOdds&&f.bookmakerOdds[b];if(!bo)continue;(data[f.fixtureId]=data[f.fixtureId]||{f,b:{}}).b[b]=bo.markets||{}}}
+    catch(e){if(/limite|chave/.test(e.message))throw e;ODDS.diag=(ODDS.diag||'')+' '+b+': '+e.message}
+  }
+  let matched=0;const names=PREF.parts||{};
+  for(const {f,b} of Object.values(data)){
+    const lg=tmap[f.tournamentId];const t=Date.parse(f.startTime);
+    const hn=names[f.participant1Id]||'',an=names[f.participant2Id]||'';
+    let best=null,score=0;
+    for(const m of upcoming){if(m.lg!==lg||Math.abs(new Date(m.d).getTime()-t)>3*3600000)continue;const s=nameSim(hn,m.h.f||m.h.n)+nameSim(an,m.a.f||m.a.n);if(s>score){score=s;best=m}}
+    if(!best||score<1)continue;
+    const out={h2h:null,tot:{},best:{},books:Object.keys(b).length};
+    const ref=b.pinnacle||b[books[1]];const refName=b.pinnacle?'Pinnacle':books[1];
+    const h1=ref&&ref['101'];const ph=pprice(h1,'101'),pd=pprice(h1,'102'),pa=pprice(h1,'103');
+    if(ph&&pd&&pa){const [h,d,a]=fair([ph,pd,pa]);out.h2h={h,d,a,src:refName}}
+    for(const [pt,ids] of Object.entries(TOT)){const mk=ref&&ref[ids.id];const o=pprice(mk,ids.over),u=pprice(mk,ids.under);if(o&&u){out.tot[pt]={o:fair([o,u])[0],src:refName}}}
+    for(const [bk,mks] of Object.entries(b).sort((x,y)=>(x[0]==='pinnacle'?-1:0)-(y[0]==='pinnacle'?-1:0))){
+      const title=bk==='pinnacle'?'Pinnacle':bk==='bet365'?'bet365':bk;
+      // a odd usada no valor esperado é a da sua casa (bet365); sem ela, a da Pinnacle
+      const set=(k,p)=>{if(p&&(bk!=='pinnacle'||!out.best[k]))out.best[k]={p,b:title}};
+      set('h',pprice(mks['101'],'101'));set('d',pprice(mks['101'],'102'));set('a',pprice(mks['101'],'103'));
+      for(const [pt,ids] of Object.entries(TOT))set('o'+pt,pprice(mks[ids.id],ids.over));
+    }
+    ODDS.ev[best.id]={...out,at:Date.now(),names:hn+' x '+an};matched++;
+  }
+  if(!matched)ODDS.diag='Recebi '+Object.keys(data).length+' jogos da OddsPapi mas nenhum bateu com a ESPN. Exemplo: '+JSON.stringify(Object.values(data).slice(0,2).map(x=>({t:x.f.tournamentId,h:names[x.f.participant1Id],a:names[x.f.participant2Id],d:x.f.startTime})));
+  else ODDS.diag='';
+  return matched;
 }
 
 /* ============ Futebol: tela ============ */
@@ -1168,7 +1283,7 @@ function rerender(){
 }
 function renderSettings(){
   $('leagueChecks').innerHTML=LEAGUES.map(([k,n])=>`<label class="row small" style="gap:6px"><input type="checkbox" data-lg="${k}" ${settings.leagues.includes(k)?'checked':''}> ${esc(n)}</label>`).join('');
-  $('setDays').value=String(settings.days);$('setRefs').checked=settings.refs;$('setAuto').checked=settings.auto;$('setStake').value=settings.stake;$('setOddsKey').value=settings.oddsKey||'';$('setOddsRegion').value=settings.oddsRegion||'eu';if(ODDS.left!=null&&!$('oddsStatus').textContent)$('oddsStatus').textContent=ODDS.left+' créditos restantes';$('setBank').value=settings.bank;
+  $('setDays').value=String(settings.days);$('setRefs').checked=settings.refs;$('setAuto').checked=settings.auto;$('setStake').value=settings.stake;$('setOddsKey').value=settings.oddsKey||'';$('setOddsRegion').value=settings.oddsRegion||'eu';$('setOddsProv').value=oddsProv();$('regionWrap').hidden=oddsProv()!=='toa';if(ODDS.left!=null&&!$('oddsStatus').textContent)$('oddsStatus').textContent=ODDS.left+' créditos restantes';$('setBank').value=settings.bank;
   let bytes=0;try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k.startsWith(P))bytes+=(localStorage.getItem(k)||'').length}}catch{}
   $('storageInfo').textContent='Usando '+(bytes/1024).toFixed(0)+' KB';
 }
@@ -1224,10 +1339,11 @@ $('setBank').onchange=e=>{settings.bank=Number(e.target.value)||0;saveSettings()
 $('bExport').onclick=exportBackup;
 $('setOddsKey').onchange=e=>{settings.oddsKey=e.target.value.trim();saveSettings();showOddsButtons()};
 $('setOddsRegion').onchange=e=>{settings.oddsRegion=e.target.value;saveSettings()};
+$('setOddsProv').onchange=e=>{settings.oddsProv=e.target.value;saveSettings();$('regionWrap').hidden=e.target.value!=='toa';showOddsButtons()};
 $('oddsTest').onclick=()=>{settings.oddsKey=$('setOddsKey').value.trim();saveSettings();showOddsButtons();testOddsKey()};
 $('fOdds').onclick=fetchOdds;
 $('propsFetch').onclick=fetchNbaProps;
-function showOddsButtons(){$('fOdds').hidden=!settings.oddsKey;$('propsFetch').hidden=!settings.oddsKey}
+function showOddsButtons(){$('fOdds').hidden=!settings.oddsKey;$('propsFetch').hidden=!settings.oddsKey||oddsProv()!=='toa'}
 showOddsButtons();
 $('bImport').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{importBackup(JSON.parse(await f.text()))}catch{toast('Arquivo inválido')}e.target.value=''};
 $('bClearCache').onclick=e=>{const b=e.currentTarget;if(b.dataset.confirm!=='1'){b.dataset.confirm='1';b.textContent='Toque de novo para confirmar';setTimeout(()=>{b.dataset.confirm='';b.textContent='Limpar dados baixados'},3000);return}
