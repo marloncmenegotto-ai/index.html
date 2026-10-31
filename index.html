@@ -1019,7 +1019,7 @@ function nbaIndex(){
 }
 function nbaWinProb(hAb,aAb,day){
   const I=nbaIndex();const prior=ab=>(I.team[ab]||[]).filter(g=>g.d<day).slice(0,12);
-  const H=prior(hAb),A=prior(aAb);if(H.length<4||A.length<4)return null;
+  const H=prior(hAb),A=prior(aAb);if(H.length<3||A.length<3)return null;
   const net=arr=>{let s=0,w=0;arr.forEach((g,i)=>{const k=Math.pow(.92,i);s+=(g.pf-g.pa)*k;w+=k});return s/w*(arr.length/(arr.length+4))};
   const margin=(net(H)-net(A))/2+2.4;   // vantagem de jogar em casa ~2,4 pontos
   const pH=ncdf(margin/12.5);
@@ -1027,7 +1027,7 @@ function nbaWinProb(hAb,aAb,day){
   return {pH,margin,nH:H.length,nA:A.length,fH:rec(H),fA:rec(A)};
 }
 function nbaPlayerProb(games,stat,mile){
-  const v=games.map(g=>g[stat]).filter(x=>x!=null);const n=Math.min(10,v.length);if(n<5)return null;
+  const v=games.map(g=>g[stat]).filter(x=>x!=null);const n=Math.min(10,v.length);if(n<3)return null;
   const v10=v.slice(0,10),v15=v.slice(0,15);
   const hits=v10.filter(x=>x>=mile).length,h5=v10.slice(0,5).filter(x=>x>=mile).length;
   const mean=v15.reduce((s,x)=>s+x,0)/v15.length,sd=Math.max(1,Math.sqrt(v15.reduce((s,x)=>s+(x-mean)**2,0)/Math.max(1,v15.length-1)));
@@ -1042,7 +1042,7 @@ function nbaBacktest(){
   for(const [eid,e] of Object.entries(I.events)){const ab=Object.keys(e.t);if(ab.length!==2)continue;const w=nbaWinProb(ab[0],ab[1],e.d);if(w){const fav=w.pH>=.5;res.win.push({p:fav?w.pH:1-w.pH,hit:(e.t[ab[0]]>e.t[ab[1]])===fav?1:0})}}
   const byP={};for(const r of NBA)(byP[r.p]=byP[r.p]||[]).push(r);
   for(const arr of Object.values(byP)){arr.sort((a,b)=>b.d.localeCompare(a.d));
-    for(let i=0;i<arr.length;i++){const prior=arr.slice(i+1);if(prior.length<5)break;
+    for(let i=0;i<arr.length;i++){const prior=arr.slice(i+1);if(prior.length<3)break;
       for(const st of ['pts','reb','ast'])for(const mi of MILES[st]){const r=nbaPlayerProb(prior,st,mi);if(!r||r.p<.55)continue;const v=arr[i][st];if(v==null)continue;res[st].push({p:r.p,hit:v>=mi?1:0})}}}
   NBBT={n:NBA.length,res,unstable:{},tiers:{}};
   for(const k of Object.keys(res)){const t={F:{n:0,g:0},M:{n:0,g:0}};for(const s of res[k]){const g=nbaGrade(k,calib(k,s.p,res[k]),true);if(t[g]){t[g].n++;t[g].g+=s.hit}}NBBT.tiers[k]=t;if(t.F.n>=20&&t.F.g/t.F.n<NB_GR[k][0]-.07)NBBT.unstable[k]=true}
@@ -1057,10 +1057,10 @@ function nbaAutoRecords(games,day){
     const w=nbaWinProb(g.ha,g.aa,day);
     if(w){const favH=w.pH>=.5;const raw=favH?w.pH:1-w.pH;const p=nbCal('win',raw);const fav=favH?g.h:g.a;const favAb=favH?g.ha:g.aa;
       const agree=favH?w.fH>=w.fA:w.fA>=w.fH;
-      const id='nb:'+g.id+':win';const rec={id,sport:'nba',t,live:g.st==='in',lg:'nba',league:'NBA',who:label,game:'',hl:g.hl,al:g.al,mkey:'nba_win',market:'Vitória '+fav,mgroup:'NBA · Vitória',line:'—',odd:null,p,tier:nbaGrade('win',p,true,agree),h5:favH?w.fH:w.fA,det:`Saldo projetado ${w.margin>0?g.h:g.a} por ${Math.abs(w.margin).toFixed(1)} pts · vitórias nos últimos 5: ${g.h} ${w.fH}/5 · ${g.a} ${w.fA}/5`,leg:{kind:'win',team:favAb,date:day,title:label}};
+      const id='nb:'+g.id+':win';const rec={id,sport:'nba',t,live:g.st==='in',lg:'nba',league:'NBA',who:label,game:'',hl:g.hl,al:g.al,mkey:'nba_win',market:'Vitória '+fav,mgroup:'NBA · Vitória',line:'—',odd:null,p,tier:nbaGrade('win',p,true,agree&&w.nH>=5&&w.nA>=5),h5:favH?w.fH:w.fA,det:`Saldo projetado ${w.margin>0?g.h:g.a} por ${Math.abs(w.margin).toFixed(1)} pts · vitórias nos últimos 5: ${g.h} ${w.fH}/5 · ${g.a} ${w.fA}/5`,leg:{kind:'win',team:favAb,date:day,title:label}};
       recs.push(rec);NBREC[id]=rec}
     for(const ab of [g.ha,g.aa]){
-      const roster=Object.values(pls).filter(p=>p.team===ab&&p.g.length>=5&&p.g[0].d>=dayKey(addDays(new Date(day),-12)));
+      const roster=Object.values(pls).filter(p=>p.team===ab&&p.g.length>=3&&p.g[0].d>=dayKey(addDays(new Date(day),-14)));
       for(const pl of roster){
         const inj=INJ.map[pl.name.toLowerCase()];if(inj&&/out|fora/i.test(inj.st))continue;
         const mins=pl.g.slice(0,5).map(x=>x.min).filter(x=>x!=null);const avgMin=mins.length?mins.reduce((s,x)=>s+x,0)/mins.length:null;
@@ -1072,7 +1072,7 @@ function nbaAutoRecords(games,day){
           for(const mi of MILES[st]){const r=nbaPlayerProb(pl.g,st,mi);if(!r)continue;const p=nbCal(st,r.p);if(p>=.6)pick={mi,p,...r}}
           if(!pick)continue;
           const id='np:'+day+':'+pl.name+':'+st+':'+pick.mi;
-          const tier=nbaGrade(st,pick.p,true,pick.h5===5&&pick.hits>=9&&minStable&&!inj);
+          const tier=nbaGrade(st,pick.p,true,pick.n>=5&&pick.h5===pick.v10.slice(0,5).length&&pick.hits>=Math.ceil(pick.n*.9)&&minStable&&!inj);
           const rec={id,sport:'nba',t,live:g.st==='in',lg:'nba',league:'NBA',who:pl.name,game:label+' · '+ab,mkey:'nba_'+st,market:pick.mi+'+ '+STATN[st]+' · '+pl.name,mgroup:'NBA · '+MK[st],line:pick.mi+'+',odd:null,p:pick.p,tier,h5:pick.h5,det:`Últimos ${pick.n}: ${pick.hits}/${pick.n} com ${pick.mi}+ · média ${pick.mean.toFixed(1)} · valores ${pick.v10.join(', ')}${avgMin!=null?' · '+avgMin.toFixed(0)+' min/jogo':''}${inj?' · lesão: '+inj.st:''}`,leg:{kind:'mile',player:pl.name,m:st,dir:'over',line:pick.mi-.5,date:day,title:pl.name}};
           recs.push(rec);NBREC[id]=rec;
         }
@@ -1466,6 +1466,8 @@ async function renderNbaTop(){
   const nF=list.filter(r=>r.tier==='F').length;
   const bt=NBBT;const rate=t=>t&&t.n?Math.round(t.g/t.n*100)+'% ('+t.g+'/'+t.n+')':'—';
   out.innerHTML=`<div class="card"><h3 style="margin:0">Melhores oportunidades · NBA</h3><div class="small muted" style="margin-top:4px">${nd.games.length} jogos · ${recs.length} previsões · do melhor para o pior</div><div class="row" style="margin-top:10px;gap:6px"><span class="pill F">${nF} fortes</span><span class="pill B">${list.length-nF} moderadas</span></div></div>`+
+  (list.length?'':(()=>{const pl=Object.values(players());const teams=new Set(nd.games.flatMap(g=>[g.ha,g.aa]));const inG=pl.filter(p=>teams.has(p.team));const ok3=inG.filter(p=>p.g.length>=3);
+    return `<div class="card"><h3 style="margin-top:0">Por que não apareceu nada</h3><div class="funnel">${[['Jogos da NBA no dia',nd.games.length],['Jogadores sincronizados',pl.length],['Jogadores destes times',inG.length],['Com 3+ jogos na base',ok3.length],['Previsões calculadas',recs.length]].map(([l,v])=>`<div class="fr"><span>${l}</span><span class="fb"><i style="width:${Math.min(100,v?Math.max(4,v/Math.max(1,pl.length)*100):0)}%"></i></span><b class="num">${v}</b></div>`).join('')}</div><p class="small muted" style="margin:8px 0 0">${!inG.length?'Os times deste dia não aparecem nas estatísticas. Toque em Sincronizar stats.':recs.length?'As previsões existem, mas ficaram em Observação. Veja no Painel com o filtro Observação.':'No início da temporada há poucos jogos por jogador. Sincronize de novo depois da próxima rodada.'}</p></div>`})())+
   (list.length?list.map((r,i)=>{const on=inSlip(r.id);const tm=r.t?hm(new Date(r.t)):'';
     return `<article class="card" style="padding:12px 14px"><div class="row" style="flex-wrap:nowrap;gap:12px;align-items:flex-start"><span class="rank">${i+1}</span>
     <div style="flex:1;min-width:0"><div class="row between" style="flex-wrap:nowrap;gap:8px"><b style="min-width:0">${esc(r.market)}</b><span class="pct">${pct(r.p)}</span></div>
