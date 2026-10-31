@@ -289,8 +289,17 @@ nav.bottom .wrap{grid-template-columns:repeat(6,1fr)}
     <div class="progress" id="nProg" hidden><i></i></div>
     <div id="nMsg"></div>
     <div class="seg" id="nTab" role="group" aria-label="Visão NBA">
-      <button data-v="jogos" aria-pressed="true">Jogos</button>
+      <button data-v="top" aria-pressed="true">Top do dia</button>
+      <button data-v="jogos" aria-pressed="false">Jogos</button>
       <button data-v="radar" aria-pressed="false">Radar de linhas</button>
+    </div>
+    <div id="nTop" class="view">
+      <div class="seg" id="nDay" role="group" aria-label="Dia">
+        <button data-v="0" aria-pressed="true">Hoje</button>
+        <button data-v="1" aria-pressed="false">Amanhã</button>
+        <button data-v="2" aria-pressed="false">Depois de amanhã</button>
+      </div>
+      <div id="nTopOut" class="view"></div>
     </div>
     <div id="nJogos" class="view">
       <div class="row">
@@ -453,7 +462,7 @@ let LINES=store.get('nbaLines',[]);                   // linhas do radar
 let SLIP=store.get('slip',[]);                        // bilhete atual
 let HIST=store.get('hist',[]);                        // bilhetes salvos
 
-const ui={view:'pan',fDay:0,fTab:'radar',fLeague:'all',nTab:'jogos',nTier:'Forte',hFilter:'all',hMode:'lab'};
+const ui={view:'pan',fDay:0,fTab:'radar',fLeague:'all',nTab:'top',nTier:'Forte',hFilter:'all',hMode:'lab'};
 Object.assign(ui,store.get('ui',{}));
 if(!store.get('uiv31',false)){ui.view='pan';store.set('uiv31',true)}
 const saveUi=()=>store.set('ui',{view:ui.view,fTab:ui.fTab,nTab:ui.nTab,nTier:ui.nTier});
@@ -990,6 +999,88 @@ async function fetchOddsPapi(){
   return matched;
 }
 
+/* ============ NBA automática (igual ao futebol) ============ */
+// Vitória pelo saldo de pontos recente + mando; jogadores nos marcos fixos da bet365 (10+, 15+, 20+...).
+const MILES={pts:[10,15,20,25,30,35],reb:[4,6,8,10,12],ast:[2,4,6,8,10]};
+const NB_GR={win:[.72,.62],pts:[.86,.76],reb:[.86,.76],ast:[.86,.76]};
+let NBIX=null,NBBT=null,NBREC={};
+function nbaIndex(){
+  if(NBIX&&NBIX.n===NBA.length)return NBIX;
+  const ev={};for(const r of NBA){const e=ev[r.e]=ev[r.e]||{d:r.d,t:{}};e.t[r.t]=(e.t[r.t]||0)+(r.pts||0)}
+  const team={};for(const e of Object.values(ev)){const ab=Object.keys(e.t);if(ab.length!==2)continue;for(const [i,x] of ab.entries()){const o=ab[1-i];(team[x]=team[x]||[]).push({d:e.d,pf:e.t[x],pa:e.t[o],w:e.t[x]>e.t[o]})}}
+  for(const a of Object.values(team))a.sort((x,y)=>y.d.localeCompare(x.d));
+  let lgPts=0,lgN=0;for(const a of Object.values(team))for(const g of a){lgPts+=g.pf;lgN++}
+  NBIX={n:NBA.length,team,events:ev,lg:lgN?lgPts/lgN:114};return NBIX;
+}
+function nbaWinProb(hAb,aAb,day){
+  const I=nbaIndex();const prior=ab=>(I.team[ab]||[]).filter(g=>g.d<day).slice(0,12);
+  const H=prior(hAb),A=prior(aAb);if(H.length<4||A.length<4)return null;
+  const net=arr=>{let s=0,w=0;arr.forEach((g,i)=>{const k=Math.pow(.92,i);s+=(g.pf-g.pa)*k;w+=k});return s/w*(arr.length/(arr.length+4))};
+  const margin=(net(H)-net(A))/2+2.4;   // vantagem de jogar em casa ~2,4 pontos
+  const pH=ncdf(margin/12.5);
+  const rec=arr=>arr.slice(0,5).filter(g=>g.w).length;
+  return {pH,margin,nH:H.length,nA:A.length,fH:rec(H),fA:rec(A)};
+}
+function nbaPlayerProb(games,stat,mile){
+  const v=games.map(g=>g[stat]).filter(x=>x!=null);const n=Math.min(10,v.length);if(n<5)return null;
+  const v10=v.slice(0,10),v15=v.slice(0,15);
+  const hits=v10.filter(x=>x>=mile).length,h5=v10.slice(0,5).filter(x=>x>=mile).length;
+  const mean=v15.reduce((s,x)=>s+x,0)/v15.length,sd=Math.max(1,Math.sqrt(v15.reduce((s,x)=>s+(x-mean)**2,0)/Math.max(1,v15.length-1)));
+  const pn=1-ncdf((mile-.5-mean)/sd);const p=.5*pn+.5*((hits+1)/(n+2));
+  return {p,hits,n,h5,mean,v10};
+}
+function nbaGrade(k,p,ok,extra){if(!ok||p==null)return 'I';const [f,m]=NB_GR[k];let g=p>=f?'F':p>=m?'M':'O';if(g==='F'&&extra===false)g='M';if(g==='F'&&NBBT&&NBBT.unstable[k])g='M';return g}
+// teste nos jogos passados (só dados de antes de cada jogo)
+function nbaBacktest(){
+  const I=nbaIndex();if(NBBT&&NBBT.n===NBA.length)return NBBT;
+  const res={win:[],pts:[],reb:[],ast:[]};
+  for(const [eid,e] of Object.entries(I.events)){const ab=Object.keys(e.t);if(ab.length!==2)continue;const w=nbaWinProb(ab[0],ab[1],e.d);if(w){const fav=w.pH>=.5;res.win.push({p:fav?w.pH:1-w.pH,hit:(e.t[ab[0]]>e.t[ab[1]])===fav?1:0})}}
+  const byP={};for(const r of NBA)(byP[r.p]=byP[r.p]||[]).push(r);
+  for(const arr of Object.values(byP)){arr.sort((a,b)=>b.d.localeCompare(a.d));
+    for(let i=0;i<arr.length;i++){const prior=arr.slice(i+1);if(prior.length<5)break;
+      for(const st of ['pts','reb','ast'])for(const mi of MILES[st]){const r=nbaPlayerProb(prior,st,mi);if(!r||r.p<.55)continue;const v=arr[i][st];if(v==null)continue;res[st].push({p:r.p,hit:v>=mi?1:0})}}}
+  NBBT={n:NBA.length,res,unstable:{},tiers:{}};
+  for(const k of Object.keys(res)){const t={F:{n:0,g:0},M:{n:0,g:0}};for(const s of res[k]){const g=nbaGrade(k,calib(k,s.p,res[k]),true);if(t[g]){t[g].n++;t[g].g+=s.hit}}NBBT.tiers[k]=t;if(t.F.n>=20&&t.F.g/t.F.n<NB_GR[k][0]-.07)NBBT.unstable[k]=true}
+  return NBBT;
+}
+const nbCal=(k,p)=>NBBT&&NBBT.res[k]&&NBBT.res[k].length>=40?calib(k,p,NBBT.res[k]):p;
+const STATN={pts:'pontos',reb:'rebotes',ast:'assistências'};
+function nbaAutoRecords(games,day){
+  nbaBacktest();const recs=[];const I=nbaIndex();const pls=players();
+  for(const g of games){
+    if(g.st==='post')continue;const t=new Date(g.d).getTime();const label=g.a+' @ '+g.h;
+    const w=nbaWinProb(g.ha,g.aa,day);
+    if(w){const favH=w.pH>=.5;const raw=favH?w.pH:1-w.pH;const p=nbCal('win',raw);const fav=favH?g.h:g.a;const favAb=favH?g.ha:g.aa;
+      const agree=favH?w.fH>=w.fA:w.fA>=w.fH;
+      const id='nb:'+g.id+':win';const rec={id,sport:'nba',t,live:g.st==='in',lg:'nba',league:'NBA',who:label,game:'',hl:g.hl,al:g.al,mkey:'nba_win',market:'Vitória '+fav,mgroup:'NBA · Vitória',line:'—',odd:null,p,tier:nbaGrade('win',p,true,agree),h5:favH?w.fH:w.fA,det:`Saldo projetado ${w.margin>0?g.h:g.a} por ${Math.abs(w.margin).toFixed(1)} pts · vitórias nos últimos 5: ${g.h} ${w.fH}/5 · ${g.a} ${w.fA}/5`,leg:{kind:'win',team:favAb,date:day,title:label}};
+      recs.push(rec);NBREC[id]=rec}
+    for(const ab of [g.ha,g.aa]){
+      const roster=Object.values(pls).filter(p=>p.team===ab&&p.g.length>=5&&p.g[0].d>=dayKey(addDays(new Date(day),-12)));
+      for(const pl of roster){
+        const inj=INJ.map[pl.name.toLowerCase()];if(inj&&/out|fora/i.test(inj.st))continue;
+        const mins=pl.g.slice(0,5).map(x=>x.min).filter(x=>x!=null);const avgMin=mins.length?mins.reduce((s,x)=>s+x,0)/mins.length:null;
+        if(avgMin!=null&&avgMin<20)continue;
+        const minStable=mins.length<3||Math.min(...mins)>=avgMin*.7;
+        for(const st of ['pts','reb','ast']){
+          // maior marco com chance alta; se nenhum chegar lá, o melhor fica como Observação
+          let pick=null;
+          for(const mi of MILES[st]){const r=nbaPlayerProb(pl.g,st,mi);if(!r)continue;const p=nbCal(st,r.p);if(p>=.6)pick={mi,p,...r}}
+          if(!pick)continue;
+          const id='np:'+day+':'+pl.name+':'+st+':'+pick.mi;
+          const tier=nbaGrade(st,pick.p,true,pick.h5===5&&pick.hits>=9&&minStable&&!inj);
+          const rec={id,sport:'nba',t,live:g.st==='in',lg:'nba',league:'NBA',who:pl.name,game:label+' · '+ab,mkey:'nba_'+st,market:pick.mi+'+ '+STATN[st]+' · '+pl.name,mgroup:'NBA · '+MK[st],line:pick.mi+'+',odd:null,p:pick.p,tier,h5:pick.h5,det:`Últimos ${pick.n}: ${pick.hits}/${pick.n} com ${pick.mi}+ · média ${pick.mean.toFixed(1)} · valores ${pick.v10.join(', ')}${avgMin!=null?' · '+avgMin.toFixed(0)+' min/jogo':''}${inj?' · lesão: '+inj.st:''}`,leg:{kind:'mile',player:pl.name,m:st,dir:'over',line:pick.mi-.5,date:day,title:pl.name}};
+          recs.push(rec);NBREC[id]=rec;
+        }
+      }
+    }
+  }
+  return recs;
+}
+function settleNbaWin(l){
+  const I=nbaIndex();const e=Object.values(I.events).find(e=>e.d===l.date&&e.t[l.team]!=null)||Object.values(I.events).find(e=>e.d>l.date&&e.d<=dayKey(addDays(new Date(l.date),1))&&e.t[l.team]!=null);
+  if(!e)return null;const ab=Object.keys(e.t);if(ab.length!==2)return null;const o=ab.find(x=>x!==l.team);return e.t[l.team]>e.t[o];
+}
+
 /* ============ Painel V3.1 (análise → classificação → exibição) ============ */
 const TIERS={F:{n:'Forte',c:'#36b07a'},M:{n:'Moderado',c:'#d39a2e'},O:{n:'Observação',c:'#8a97b0'},I:{n:'Indisponível',c:'#4a5a7a'}};
 const PF=Object.assign({tier:'all',sport:'all',market:'all',league:'all',q:'',sort:'prob'},store.get('pf',{}));
@@ -1031,6 +1122,7 @@ function analysisEngine(){
   const nd=NBA_DAY[target]||{games:[]};
   const teams=new Set(nd.games.flatMap(g=>[g.ha,g.aa]));
   const gameOf=ab=>nd.games.find(g=>g.ha===ab||g.aa===ab);
+  if(nd.games.length&&NBA.length)recs.push(...nbaAutoRecords(nd.games,target));
   for(const L of LINES.filter(l=>l.dir!=='under')){
     const r=analyzeLine(L);const team=r.pl&&r.pl.team;
     // linha sem jogo neste dia não entra (só filtros explícitos de período)
@@ -1064,7 +1156,7 @@ function ring(pct_,label,state){
 async function renderPanel(){
   const key=dayKey(addDays(new Date(),ui.fDay));
   if(!NBA_DAY[key]||Date.now()-NBA_DAY[key].at>30*60000){loadNbaDay(key).then(()=>{if(ui.view==='pan')renderPanel()})}
-  const A=analysisEngine();logFootball(A.elig.map(analyze));
+  const A=analysisEngine();logFootball(A.elig.map(analyze));logNbaAuto(A.recs);
   const rows=displayEngine(A);
   const fut=A.recs.filter(r=>r.sport==='fut'),nba=A.recs.filter(r=>r.sport==='nba');
   const by=(arr,t)=>cnt(arr,r=>r.tier===t);
@@ -1263,7 +1355,7 @@ function parseBox(j,ev){
         if(a.didNotPlay||!a.athlete||!a.athlete.displayName)continue;
         const v=a.stats||[];const pts=Number(v[pi]),reb=Number(v[ri]),ast=ai>=0?Number(v[ai]):NaN,min=mi>=0?Number(v[mi]):NaN;
         if(!isFinite(pts)||!isFinite(reb))continue;if(isFinite(min)&&min===0)continue;
-        out.push({p:a.athlete.displayName,t:ab,d:String(ev.date||'').slice(0,10),pts,reb,ast:isFinite(ast)?ast:null,e:String(ev.id)});
+        out.push({p:a.athlete.displayName,t:ab,d:String(ev.date||'').slice(0,10),pts,reb,ast:isFinite(ast)?ast:null,min:isFinite(min)?min:null,e:String(ev.id)});
       }
     }
   }
@@ -1289,7 +1381,7 @@ async function syncNBA(){
     toast(rows.length?rows.length+' linhas de jogadores novas':'NBA já estava em dia');
     if(errors)$('nMsg').innerHTML=`<div class="notice">${errors} consultas falharam. O resto foi salvo.</div>`;
   }catch(e){setSync('err','Falha na NBA');$('nMsg').innerHTML='<div class="notice err">Não consegui ler a ESPN ('+esc(netErr(e))+'). Os dados salvos continuam disponíveis.</div>'}
-  finally{prog('nProg',null);syncNBA.busy=false;$('nSync').disabled=false;playerIdx=null;renderNBA()}
+  finally{prog('nProg',null);syncNBA.busy=false;$('nSync').disabled=false;playerIdx=null;NBIX=null;NBBT=null;rerender()}
 }
 async function syncInjuries(){
   try{
@@ -1330,13 +1422,14 @@ function analyzeLine(L){
 }
 function chipsFor(vals,line,dir){return '<span class="chips">'+vals.map(v=>`<span class="${(dir==='over'?v>line:v<line)?'h':'m'}">${v}</span>`).join('')+'</span>'}
 function renderNBA(){
-  $('nJogos').hidden=ui.nTab!=='jogos';$('nRadar').hidden=ui.nTab!=='radar';
+  $('nJogos').hidden=ui.nTab!=='jogos';$('nRadar').hidden=ui.nTab!=='radar';$('nTop').hidden=ui.nTab!=='top';
   const pls=Object.values(players());
   $('playerList').innerHTML=pls.map(p=>`<option value="${esc(p.name)}">${esc(p.team)}</option>`).join('');
   const last=store.get('nbaLast',0);
   if(!NBA.length&&!$('nMsg').innerHTML)$('nMsg').innerHTML='<div class="notice">Toque em Sincronizar stats para baixar os box scores dos últimos 21 dias (pontos, rebotes e assistências de cada jogador).</div>';
   else if(NBA.length&&!$('nMsg').querySelector('.err'))$('nMsg').innerHTML=`<div class="small muted">${pls.length} jogadores · ${NBA.length} jogos individuais · sincronizado ${ago(last)}</div>`;
   if(ui.nTab==='radar')renderRadar();
+  if(ui.nTab==='top')renderNbaTop();
 }
 function renderRadar(){
   const rows=LINES.filter(l=>l.dir!=='under').map(analyzeLine);logNba(rows);
@@ -1352,6 +1445,30 @@ function renderRadar(){
     <span class="row" style="gap:6px"><span class="pct">${pct(r.p)}</span>${r.n?`<button class="add" data-add="${esc(id)}" aria-pressed="${on}" aria-label="Bilhete">${on?'✓':'+'}</button>`:''}<button class="x" data-delline="${L.id}" aria-label="Remover linha">×</button></span></div>
     ${r.n?`${chipsFor(r.v10,L.line,L.dir)}<div class="small muted">Últimos 5: ${r.h5}/5 · últimos ${r.n}: ${r.h10}/${r.n} · média ${r.mean.toFixed(1)} ± ${r.sd.toFixed(1)} · Wilson ${pct(r.wil)} · odd justa ${r.fair?r.fair.toFixed(2):'—'}${r.ev!=null?` · valor esperado <b style="color:${r.ev>0?'var(--green)':'var(--red)'}">${(r.ev*100).toFixed(1)}%</b>`:''}${L.casa?' · '+esc(L.casa):''}</div>${r.inj?`<div class="notice err">Lesão: ${esc(r.inj.st)}${r.inj.c?' · '+esc(r.inj.c):''}</div>`:''}`:`<div class="small muted">${esc(r.reason)}</div>`}
     </article>`}).join('');
+}
+async function renderNbaTop(){
+  setPressed($('nDay'),ui.fDay);
+  const key=dayKey(addDays(new Date(),ui.fDay));const out=$('nTopOut');
+  if(!NBA_DAY[key]){out.innerHTML='<div class="small muted">Buscando jogos da NBA…</div>';await loadNbaDay(key)}
+  else if(Date.now()-NBA_DAY[key].at>30*60000)loadNbaDay(key).then(()=>{if(ui.view==='nba'&&ui.nTab==='top')renderNbaTop()});
+  const nd=NBA_DAY[key]||{games:[]};
+  if(!NBA.length){out.innerHTML='<div class="card empty"><b>Falta baixar as estatísticas</b>Toque em Sincronizar stats. Leva cerca de 1 minuto na primeira vez.</div>';return}
+  if(!nd.games.length){out.innerHTML=`<div class="card empty"><b>Sem jogos da NBA neste dia</b>${nd.err?esc(nd.err):'Veja outro dia.'}</div>`;return}
+  const recs=nbaAutoRecords(nd.games,key);
+  for(const L of LINES.filter(l=>l.dir!=='under')){const r=analyzeLine(L);if(r.tier==='Forte'||r.tier==='Moderada')recs.push({id:'n:'+L.id,sport:'nba',t:null,who:L.p,game:L.jogo||'',market:'Mais de '+L.line+' '+MK[L.m].toLowerCase()+' · '+L.p,mgroup:'NBA · '+MK[L.m],p:r.p,tier:r.tier==='Forte'?'F':'M',h5:r.h5,odd:L.odd,book:L.casa,ev:r.ev,det:'Linha da casa · últimos '+r.n+': '+r.h10+'/'+r.n})}
+  logNbaAuto(recs);
+  const W={F:2,M:1};const list=recs.filter(r=>W[r.tier]).sort((a,b)=>W[b.tier]-W[a.tier]||b.p-a.p);
+  const nF=list.filter(r=>r.tier==='F').length;
+  const bt=NBBT;const rate=t=>t&&t.n?Math.round(t.g/t.n*100)+'% ('+t.g+'/'+t.n+')':'—';
+  out.innerHTML=`<div class="card"><h3 style="margin:0">Melhores oportunidades · NBA</h3><div class="small muted" style="margin-top:4px">${nd.games.length} jogos · ${recs.length} previsões · do melhor para o pior</div><div class="row" style="margin-top:10px;gap:6px"><span class="pill F">${nF} fortes</span><span class="pill B">${list.length-nF} moderadas</span></div></div>`+
+  (list.length?list.map((r,i)=>{const on=inSlip(r.id);const tm=r.t?hm(new Date(r.t)):'';
+    return `<article class="card" style="padding:12px 14px"><div class="row" style="flex-wrap:nowrap;gap:12px;align-items:flex-start"><span class="rank">${i+1}</span>
+    <div style="flex:1;min-width:0"><div class="row between" style="flex-wrap:nowrap;gap:8px"><b style="min-width:0">${esc(r.market)}</b><span class="pct">${pct(r.p)}</span></div>
+    <div class="small muted">${esc(r.game||r.who)}${tm?' · '+tm:''}</div>
+    <div class="row" style="gap:6px;margin-top:6px"><span class="pill ${r.tier==='F'?'F':'B'}">${r.tier==='F'?'Forte':'Moderada'}</span>${r.h5!=null?`<span class="tag">${r.h5}/5 recentes</span>`:''}${r.odd?`<span class="tag">odd ${Number(r.odd).toFixed(2)}${r.book?' '+esc(r.book):''}</span>`:''}</div>
+    <details style="margin-top:6px"><summary class="small" style="color:var(--gold);cursor:pointer">Por quê</summary><div class="small muted" style="margin-top:4px">${esc(r.det)}</div></details></div>
+    <button class="add" data-add="${esc(r.id)}" aria-pressed="${on}" aria-label="Bilhete">${on?'✓':'+'}</button></div></article>`}).join(''):'<div class="card empty"><b>Nenhuma oportunidade Forte ou Moderada</b>As previsões deste dia ficaram em Observação. Veja todas no Painel.</div>')+
+  (bt?`<details class="card"><summary style="cursor:pointer;font-weight:600">Precisão no teste (jogos passados)</summary><div class="tbl" style="margin-top:8px"><table><thead><tr><th>Mercado</th><th class="n">Forte</th><th class="n">Moderado</th></tr></thead><tbody>${['win','pts','reb','ast'].map(k=>`<tr><td>${k==='win'?'Vitória':MK[k]}${bt.unstable[k]?' <span class="tag">instável</span>':''}</td><td class="n">${rate(bt.tiers[k]&&bt.tiers[k].F)}</td><td class="n">${rate(bt.tiers[k]&&bt.tiers[k].M)}</td></tr>`).join('')}</tbody></table></div><p class="small muted" style="margin:8px 0 0">Cada jogo passado foi previsto só com os dados de antes dele. Odds dos marcos (20+ pontos etc.) não vêm da API: confira o preço na bet365.</p></details>`:'');
 }
 function previewLine(){
   const name=$('lPlayer').value.trim().toLowerCase(),pl=players()[name];
@@ -1396,6 +1513,10 @@ function legFromId(id){
     const [,mid,key]=id.split(':');const m=FB.matches[mid];if(!m)return null;
     const an=analyze(m),mk=an.markets.find(x=>x.key===key);if(!mk)return null;
     return {id,sport:'fut',match:mid,teams:[m.h.id,m.a.id],title:m.h.n+' x '+m.a.n,label:mk.label,key,p:mk.p,g:mk.g,date:m.d,lg:m.lg,winTeam:mk.fav||null,odd:mk.mi&&mk.mi.best?mk.mi.best.p:null};
+  }
+  if(id.startsWith('nb:')||id.startsWith('np:')){
+    const r=NBREC[id];if(!r)return null;const L=r.leg;
+    return {id,sport:'nba',match:L.kind==='win'?id:id,teams:L.kind==='win'?[L.team]:['p:'+L.player],title:r.who+(r.game?' · '+r.game:''),label:r.market,p:r.p,g:r.tier==='F'?'F':r.tier==='M'?'B':'X',date:L.date,kind:L.kind,team:L.team,player:L.player,m:L.m,dir:L.dir,line:L.line,odd:null};
   }
   if(id.startsWith('n:')){
     const L=LINES.find(x=>'n:'+x.id===id);if(!L)return null;const r=analyzeLine(L);
@@ -1475,6 +1596,12 @@ function logFootball(ans){
   }
   if(ch)store.set('pred',PRED);
 }
+function logNbaAuto(recs){
+  const now=Date.now();let ch=0;
+  for(const r of recs){if(r.sport!=='nba'||!r.leg||(r.tier!=='F'&&r.tier!=='M')||r.live||PRED[r.id])continue;
+    PRED[r.id]={id:r.id,sport:'nba',comp:'NBA',title:r.who,sel:r.market,player:r.leg.player,m:r.leg.m||'win',dir:'over',line:r.leg.line,kind:r.leg.kind,team:r.leg.team,date:r.leg.date,p:r.p,tier:r.tier==='F'?'F':'B',model:MODEL,at:now,start:r.t,res:null};ch++}
+  if(ch)store.set('pred',PRED);
+}
 function logNba(rows){
   const now=Date.now(),day=dayKey(new Date());let ch=0;
   for(const r of rows){if(r.tier!=='Forte'&&r.tier!=='Moderada')continue;const id='n:'+r.L.id+':'+day;if(PRED[id])continue;
@@ -1487,7 +1614,7 @@ function settlePreds(){
     if(p.res!=null)continue;
     let r=null;
     if(p.sport==='fut'){const m=FB.matches[p.match];if(m&&m.done&&m.h.s!=null)r=marketHit(p.key,m,p.fav)}
-    else r=settleLeg({sport:'nba',player:p.player,m:p.m,dir:p.dir,line:p.line,date:p.date});
+    else r=settleLeg({sport:'nba',kind:p.kind,team:p.team,player:p.player,m:p.m,dir:p.dir,line:p.line,date:p.date});
     if(r!=null){p.res=r?'G':'R';p.settledAt=Date.now();ch++}
   }
   if(ch)store.set('pred',PRED);return ch;
@@ -1506,7 +1633,7 @@ function renderLab(){
   <div class="card"><div class="row between"><span class="muted small">Taxa de acerto real (intervalo de 95%)</span><b class="num">${done.length?pct(g/done.length):'—'}${ci(g,done.length)}</b></div><div class="row between small muted" style="margin-top:4px"><span>Brier Score (0 é perfeito, 0.25 é chute)</span><span class="num">${brier!=null?brier.toFixed(3):'—'}</span></div><div class="row between small muted"><span>Mudaram de nível até o início do jogo</span><span class="num">${changed}</span></div>
   <p class="small muted" style="margin:8px 0 0">O app registra sozinho todo palpite Forte ou Moderado na primeira vez que aparece, com horário e versão do modelo (${MODEL}). Esse registro nunca é alterado depois. São previsões, não apostas feitas.</p></div>
   ${table('Por nível',grp(done,p=>p.tier==='F'?'Forte':'Moderado').map(([k,l])=>row(k,l)))}
-  ${table('Por mercado',grp(done,p=>p.sport==='nba'?'NBA · '+MK[p.m]:MKNAME[p.key]).map(([k,l])=>row(k,l)))}
+  ${table('Por mercado',grp(done,p=>p.sport==='nba'?'NBA · '+(p.kind==='win'?'Vitória':MK[p.m]):MKNAME[p.key]).map(([k,l])=>row(k,l)))}
   ${table('Por antecedência',grp(done.filter(p=>p.start),p=>p.start-p.at>=86400000?'24 h ou mais antes':'Menos de 24 h antes').map(([k,l])=>row(k,l)))}
   ${table('Calibração · previsto x real',bins.map(([k,l])=>row(k,l)))}
   ${done.length?'':'<div class="card empty"><b>Ainda sem previsões conferidas</b>Abra o Radar antes dos jogos. Depois que eles acabarem, toque em Conferir resultados.</div>'}`;
@@ -1518,6 +1645,7 @@ function settleLeg(l){
     const m=FB.matches[l.match];if(!m||!m.done||m.h.s==null)return null;
     return marketHit(l.key,m,l.winTeam);
   }
+  if(l.sport==='nba'&&l.kind==='win')return settleNbaWin(l);
   if(l.sport==='nba'){
     const pl=players()[String(l.player).toLowerCase()];if(!pl)return null;
     const day=String(l.date).slice(0,10);const g=pl.g.filter(x=>x.d>=day).sort((a,b)=>a.d.localeCompare(b.d))[0];if(!g)return null;
@@ -1615,6 +1743,7 @@ $('nTier').onclick=e=>{const b=e.target.closest('button');if(!b)return;ui.nTier=
 $('hMode').onclick=e=>{const b=e.target.closest('button');if(!b)return;ui.hMode=b.dataset.v;setPressed($('hMode'),ui.hMode);renderHist()};
 $('hFilter').onclick=e=>{const b=e.target.closest('button');if(!b)return;ui.hFilter=b.dataset.v;setPressed($('hFilter'),ui.hFilter);renderHist()};
 $('nSync').onclick=syncNBA;
+$('nDay').onclick=e=>{const b=e.target.closest('button');if(!b)return;ui.fDay=Number(b.dataset.v);renderNbaTop()};
 $('nGames').onclick=loadNbaGames;
 ['lPlayer','lLine','lMarket','lDir'].forEach(id=>$(id).addEventListener('input',previewLine));
 $('lAdd').onclick=()=>{
